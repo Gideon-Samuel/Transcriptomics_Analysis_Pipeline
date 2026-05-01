@@ -29,6 +29,13 @@ This repository contains an end-to-end transcriptomic analysis pipeline for gene
   * Gene Ontology (GO)
   * KEGG pathways
 
+### Results Summary
+
+- PCA demonstrates clear separation between control and disease samples.
+- Differential expression analysis identifies significantly upregulated and downregulated genes.
+- Heatmaps confirm consistent clustering patterns across samples.
+- GO and KEGG enrichment highlight key biological processes and pathways associated with the condition.
+
 ---
 
 ### 2. DESeq2 Pipeline (RNA-seq)
