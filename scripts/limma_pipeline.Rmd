@@ -1,1 +1,345 @@
+---
+title: "LIMMA"
+author: "gideonsamuel"
+date: "2025-09-13"
+output: html_document
+---
+#Load Required Libraries
+```{r}
+library(GEOquery)
+library(limma)
+library(matrixStats)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(ggrepel)
+library(enrichplot)
+library(pheatmap)
+```
 
+#Data Acquisition
+```{r}
+id <- "GSE19188"
+e_set <- getGEO(id, GSEMatrix = TRUE)
+e_set <- e_set[[1]]
+
+expn <- exprs(e_set)
+pheno <- pData(e_set)
+```
+
+#Initial Data Inspection
+```{r}
+dim(expn)
+head(expn[,1:5])
+any(is.na(expn))
+head(pheno[,1:20])
+```
+
+#Data Normalization
+```{r}
+range(expn)#range before normalization
+# normalize (GEO data often normalized, but included for consistency)
+expn <- normalizeBetweenArrays(expn)
+range(expn)#range after normalization
+```
+
+#Sample Group Definition
+```{r}
+group <- ifelse(grepl("tissue type: tumor", pheno$characteristics_ch1), "Disease",
+         ifelse(grepl("tissue type: healthy", pheno$characteristics_ch1), "Control", NA))
+
+group <- factor(group, levels = c("Control", "Disease"))
+table(group)
+```
+
+#Data filtering and preprocessing
+```{r}
+# keep only samples with a label
+keep <- !is.na(group)
+
+expn_sub <- expn[, keep]
+group <- group[keep]
+
+all(colnames(expn_sub) == rownames(pheno)[keep])  # should be TRUE
+keep_genes <- rowVars(expn_sub) > 0
+expn_sub <- expn_sub[keep_genes, ]
+sum(keep_genes)
+```
+
+#Quality Control: PCA
+```{r}
+pca <- prcomp(t(expn_sub), scale. = TRUE)
+
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  Group = group
+)
+
+pca_summary <- summary(pca)
+var <- pca_summary$importance[2,]
+
+ggplot(pca_df, aes(PC1, PC2, color = Group)) +
+  geom_point(size = 3) +
+  stat_ellipse() +
+  labs(
+    x = paste0("PC1 (", round(var[1]*100, 2), "%)"),
+    y = paste0("PC2 (", round(var[2]*100, 2), "%)")
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+```
+
+#Differential expression analysis (LIMMA)
+```{r}
+design <- model.matrix(~0 + group)
+colnames(design) <- levels(group)
+
+fit <- lmFit(expn_sub, design)
+
+contrast.matrix <- makeContrasts(Disease-Control, levels = design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+result <- topTable(fit2, number = Inf, adjust = "fdr")
+```
+
+#Summary of Differential Expression Results
+```{r}
+cat("Significant genes (FDR < 0.05 & |logFC| > 1):",
+    sum(result$adj.P.Val < 0.05 & abs(result$logFC) > 1), "\n")
+head(result[, c("logFC", "adj.P.Val")], 10)
+```
+
+#Significant Gene Extraction
+```{r}
+# Significant genes (FDR < 0.05 and |logFC| > 1)
+
+sig_genes <- result[result$adj.P.Val < 0.05 & abs(result$logFC) > 1, ]
+
+cat("Number of significant genes:", nrow(sig_genes), "\n")
+
+# Top upregulated genes
+head(sig_genes[order(-sig_genes$logFC), ], 10)
+
+# Top downregulated genes
+head(sig_genes[order(sig_genes$logFC), ], 10)
+```
+
+#Gene Annotation and Mapping
+```{r}
+gpl <- getGEO(annotation(e_set))
+annot <- Table(gpl)
+
+# Add probe IDs
+result$ProbeID <- rownames(result)
+
+# Merge with annotation
+res_annot <- merge(result, annot, by.x = "ProbeID", by.y = "ID")
+
+# Clean gene symbols
+res_annot <- res_annot[!is.na(res_annot$`Gene Symbol`) &
+                       res_annot$`Gene Symbol` != "", ]
+
+# Sort by significance FIRST
+res_annot <- res_annot[order(res_annot$adj.P.Val), ]
+
+# Remove duplicates AFTER sorting (keep best probe per gene)
+res_annot <- res_annot[!duplicated(res_annot$`Gene Symbol`), ]
+```
+
+#Expression Matrix Conversion (Probe to Gene)
+```{r}
+#Convert expression matrix to gene symbols
+mapping <- res_annot[, c("ProbeID", "Gene Symbol")]
+
+# Keep only probes present in expression matrix
+mapping <- mapping[mapping$ProbeID %in% rownames(expn_sub), ]
+
+# Match order with expression matrix
+mapping <- mapping[match(rownames(expn_sub), mapping$ProbeID), ]
+
+# Remove NA matches
+valid <- !is.na(mapping$ProbeID)
+
+expn_gene <- expn_sub[valid, ]
+mapping   <- mapping[valid, ]
+
+# Assign gene symbols as rownames
+rownames(expn_gene) <- mapping$`Gene Symbol`
+
+# Remove any accidental duplicate gene names
+expn_gene <- expn_gene[!duplicated(rownames(expn_gene)), ]
+```
+
+#Annotated Significant Genes
+```{r}
+#Significant genes
+
+sig_annot <- res_annot[res_annot$adj.P.Val < 0.05 & abs(res_annot$logFC) > 1, ]
+
+#Volcano Plot gene selection
+top_up   <- sig_annot[sig_annot$logFC > 1, ]
+top_down <- sig_annot[sig_annot$logFC < -1, ]
+
+top_up   <- head(top_up[order(top_up$adj.P.Val), ], 5)
+top_down <- head(top_down[order(top_down$adj.P.Val), ], 5)
+
+top_genes_volcano <- rbind(top_up, top_down)
+```
+
+#Volcano plot Visualization
+```{r}
+# Define significance
+result$Significance <- "Not Significant"
+result$Significance[result$adj.P.Val < 0.05 & result$logFC > 1] <- "Up"
+result$Significance[result$adj.P.Val < 0.05 & result$logFC < -1] <- "Down"
+
+# Count genes
+n_up   <- sum(result$Significance == "Up")
+n_down <- sum(result$Significance == "Down")
+
+# Plot
+ggplot(result, aes(x = logFC, y = -log10(adj.P.Val), color = Significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  
+  scale_color_manual(values = c(
+    "Down" = "blue",
+    "Not Significant" = "grey",
+    "Up" = "red"
+  )) +
+  
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+
+  # Smart labels
+  geom_text_repel(
+  data = top_genes_volcano,
+  aes(x = logFC, 
+      y = -log10(adj.P.Val), 
+      label = `Gene Symbol`,
+      color = Significance
+      ),
+    inherit.aes = FALSE,
+    size = 3
+    )+
+  
+  labs(
+    title = paste0("Volcano Plot (Up: ", n_up, ", Down: ", n_down, ")"),
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted P-value"
+    ) +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+```
+
+#Functional Enrichment Analysis
+```{r}
+genes <- unique(sig_annot$`Gene Symbol`)
+genes <- genes[!is.na(genes)]
+
+gene_df <- bitr(genes,
+                fromType = "SYMBOL",
+                toType = "ENTREZID",
+                OrgDb = org.Hs.eg.db)
+
+entrez_ids <- unique(gene_df$ENTREZID)
+
+if (length(entrez_ids) == 0) {
+  stop("No genes mapped to ENTREZ IDs")
+}
+```
+
+#GO Enrichment Analysis
+```{r}
+ego <- enrichGO(gene          = entrez_ids,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05)
+
+head(ego)
+# GO enrichment visualization
+dotplot(ego, showCategory = 10) +
+  scale_color_gradient(low = "#2c7bb6", high = "#d7191c") +
+  labs(title = "GO Biological Processes") +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+```
+
+#KEGG Pathway Enrichment
+```{r}
+kegg <- enrichKEGG(gene         = entrez_ids,
+                   organism     = "hsa",
+                   pvalueCutoff = 0.05)
+
+head(kegg)
+
+# KEGG enrichment visualization
+dotplot(kegg, showCategory = 10) +
+  scale_color_gradient(low = "#2c7bb6", high = "#d7191c") +
+  labs(title = "KEGG Pathways") +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+```
+
+#Heatmap of Top Differentially Expressed Genes
+```{r, fig.width=10, fig.height=8}
+annotation_col <- data.frame(Group = group)
+rownames(annotation_col) <- colnames(expn_sub)
+
+# Select top genes by BOTH significance and variability
+top_genes_heatmap <- head(sig_annot[order(abs(sig_annot$logFC), decreasing = TRUE), ], 50)
+
+gene_names <- top_genes_heatmap$`Gene Symbol`
+
+valid_genes <- gene_names[gene_names %in% rownames(expn_gene)]
+
+if (length(valid_genes) == 0) {
+  stop("No valid genes found for heatmap")
+}
+
+mat <- expn_gene[valid_genes, , drop = FALSE]
+
+pheatmap(mat,
+         scale = "row",
+         annotation_col = annotation_col,
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         clustering_method = "complete",
+         main = "Top Differentially Expressed Genes",
+         fontsize = 6)
+```
+
+#Sample Clustering (Distance Heatmap)
+```{r, fig.width=10, fig.height=8}
+dist_mat <- dist(t(expn_sub))
+hc <- hclust(dist_mat)
+
+pheatmap(as.matrix(dist_mat)[hc$order, hc$order],
+         annotation_col = annotation_col,
+         show_colnames = FALSE,
+         show_rownames = FALSE,
+         clustering_method = "complete",
+         main = "Sample Distance Heatmap",
+         fontsize = 6)
+```
+
+#Final Gene Inspection
+```{r}
+# Top significant genes
+head(res_annot[order(res_annot$adj.P.Val),
+               c("Gene Symbol", "logFC", "adj.P.Val")], 20)
+
+# Top upregulated genes
+head(res_annot[order(-res_annot$logFC),
+               c("Gene Symbol", "logFC", "adj.P.Val")], 20)
+```
+
+# Save results
+```{r}
+write.csv(sig_genes, "DE_genes.csv")
+write.csv(as.data.frame(ego), "GO_results.csv")
+write.csv(as.data.frame(kegg), "KEGG_results.csv")
+```
