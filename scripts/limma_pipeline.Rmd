@@ -367,7 +367,7 @@ head(res_annot[order(-res_annot$logFC),
 
 # Save results
 ```{r}
-write.csv(sig_genes, "results/tables/DE_genes.csv", row.names = TRUE)
-write.csv(as.data.frame(ego), "results/tables/GO_results.csv", row.names = FALSE)
-write.csv(as.data.frame(kegg), "results/tables/KEGG_results.csv", row.names = FALSE)
+write.csv(sig_genes, "results/tables/GSE19188_DE_genes.csv", row.names = TRUE)
+write.csv(as.data.frame(ego), "results/tables/GSE19188_GO_results.csv", row.names = FALSE)
+write.csv(as.data.frame(kegg), "results/tables/GSE19188_KEGG_results.csv", row.names = FALSE)
 ```
