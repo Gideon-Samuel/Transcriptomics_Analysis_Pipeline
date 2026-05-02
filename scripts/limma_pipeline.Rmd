@@ -229,8 +229,7 @@ v <- ggplot(result, aes(x = logFC, y = -log10(adj.P.Val), color = Significance))
   data = top_genes_volcano,
   aes(x = logFC, 
       y = -log10(adj.P.Val), 
-      label = `Gene Symbol`,
-      color = Significance
+      label = `Gene Symbol`
       ),
     inherit.aes = FALSE,
     size = 3
